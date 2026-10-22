@@ -1,0 +1,95 @@
+name: Gerar atalho Quest APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      nome:
+        description: 'Nome que aparece no Quest (ex.: SIMULACOES - BTP)'
+        required: true
+        default: 'INTERNET - BTP'
+        type: string
+      url:
+        description: 'Endereco HTTPS completo (ex.: https://phet.colorado.edu/pt_BR/)'
+        required: true
+        default: 'https://www.google.com/'
+        type: string
+      identificador:
+        description: 'Identificador unico: minusculas, sem espacos (ex.: phet)'
+        required: true
+        default: 'internet'
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar codigo-fonte
+        uses: actions/checkout@v4
+
+      - name: Configurar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Configurar Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Configurar Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Instalar Android SDK 35
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Preparar nome e URL do atalho
+        env:
+          SITE_TITLE: ${{ inputs.nome }}
+          SITE_URL: ${{ inputs.url }}
+          SITE_ID: ${{ inputs.identificador }}
+        run: |
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          import os, re
+          from urllib.parse import urlsplit
+          from xml.sax.saxutils import escape
+
+          title = os.environ['SITE_TITLE'].strip()
+          url = os.environ['SITE_URL'].strip()
+          app_id = os.environ['SITE_ID'].strip()
+          parsed = urlsplit(url)
+          if not (1 <= len(title) <= 60) or '\n' in title or '\r' in title:
+              raise SystemExit('Nome: use de 1 a 60 caracteres, sem quebra de linha.')
+          if not re.fullmatch(r'[a-z][a-z0-9_]{0,39}', app_id):
+              raise SystemExit('Identificador: apenas a-z, 0-9 e _, comecando com letra.')
+          if not (url.startswith('https://') and parsed.scheme == 'https' and parsed.netloc and not parsed.username and not parsed.password and len(url) <= 2048):
+              raise SystemExit('URL invalida. Informe um endereco HTTPS completo.')
+          if any(ord(c) < 32 for c in url):
+              raise SystemExit('A URL nao pode conter caracteres de controle.')
+
+          # Escapa as marcas especiais de Android string e do XML.
+          def android_string(value):
+              return escape(value.replace('\\', '\\\\').replace("'", "\\'").replace('"', '\\"'))
+          xml = ('<?xml version="1.0" encoding="utf-8"?>\n'
+                 '<resources>\n'
+                 f'  <string name="app_name">{android_string(title)}</string>\n'
+                 f'  <string name="site_url">{android_string(url)}</string>\n'
+                 '</resources>\n')
+          Path('app/src/main/res/values/strings.xml').write_text(xml, encoding='utf-8')
+          print(f'Atalho: {title} | URL: {url} | ID: {app_id}')
+          PYTHON
+
+      - name: Gerar APK
+        env:
+          QUEST_SHORTCUT_ID: ${{ inputs.identificador }}
+        run: gradle assembleDebug --no-daemon
+
+      - name: Disponibilizar APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: atalho-quest-apk-${{ github.run_number }}
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
